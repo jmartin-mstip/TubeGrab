@@ -219,31 +219,39 @@
   /* chooser */
   .chooser { padding: 14px 6px 4px; }
   .card.working .chooser, .card.ready .chooser { display: none; }
-  .seg { position: relative; display: grid; grid-template-columns: 1fr 1fr; background: var(--sunk); border-radius: 13px; padding: 4px; }
-  .seg .ind { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc(50% - 4px); background: var(--surface);
               border: 1px solid var(--line); border-radius: 10px; transition: transform .4s var(--spring); }
-  .seg[data-active="audio"] .ind { transform: translateX(100%); }
-  .seg button { position: relative; z-index: 1; padding: 10px; font-weight: 700; color: var(--muted); border-radius: 10px;
                 display: flex; align-items: center; justify-content: center; gap: 8px; transition: color .2s; }
-  .seg button .i { width: 18px; height: 18px; transition: transform .35s var(--spring); }
-  .seg button[aria-selected="true"] { color: var(--ink); }
-  .seg button[aria-selected="true"] .i { transform: scale(1.12); }
 
-  .options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
-  .opt { position: relative; text-align: left; background: var(--surface); border: 1.5px solid var(--line); border-radius: 13px; padding: 11px 12px;
          transition: border-color .15s, background .15s, transform .15s var(--ease); animation: tile .4s var(--ease) both; animation-delay: calc(var(--n) * 35ms); }
-  @keyframes tile { from { opacity: 0; transform: translateY(8px) scale(.97); } }
-  .opt:hover { border-color: var(--line-strong); transform: translateY(-1px); }
-  .opt:active { transform: scale(.97); }
-  .opt[aria-checked="true"] { border-color: var(--teal); background: var(--teal-tint); }
-  .opt .q { font-weight: 800; font-size: 1rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; padding-right: 16px; }
-  .opt .tag { font-size: .7rem; font-weight: 700; color: var(--teal-text); }
-  .opt .sz { display: block; color: var(--muted); font-size: .82rem; margin-top: 1px; font-variant-numeric: tabular-nums; }
-  .opt .tick { position: absolute; top: 9px; right: 9px; width: 18px; height: 18px; border-radius: 50%; background: var(--teal);
                color: #fff; display: grid; place-items: center; transform: scale(0); transition: transform .3s var(--spring); }
-  .opt .tick svg { width: 12px; height: 12px; stroke-width: 3.5; }
-  .opt[aria-checked="true"] .tick { transform: scale(1); }
   .empty { grid-column: 1 / -1; color: var(--muted); font-size: .92rem; padding: 6px 2px; }
+
+  /* format + quality dropdowns (native pickers: the phone's own list opens) */
+  .pickers { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .pick { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .pick-label { font-size: .85rem; font-weight: 700; color: var(--muted); padding-left: 2px; }
+  .select { position: relative; display: block; }
+  .select select { -webkit-appearance: none; appearance: none; width: 100%; font: inherit; font-weight: 700; font-size: 1rem;
+                   color: var(--ink); background: var(--surface); border: 1.5px solid var(--line); border-radius: 13px;
+                   padding: 13px 40px 13px 44px; cursor: pointer; text-overflow: ellipsis; white-space: nowrap; overflow: hidden;
+                   transition: border-color .15s, box-shadow .2s, background .2s; }
+  .select select:hover { border-color: var(--line-strong); }
+  .select select:focus-visible { outline: none; border-color: var(--teal); box-shadow: 0 0 0 4px color-mix(in srgb, var(--teal) 16%, transparent); }
+  .select select:disabled { cursor: default; opacity: 1; background: var(--sunk); }
+  .select select option { color: var(--ink); background: var(--surface); }
+  .select .lead { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); display: grid; color: var(--teal); pointer-events: none; }
+  .select .lead .i { width: 19px; height: 19px; }
+  .select .i-chevron-down { position: absolute; right: 14px; top: 50%; width: 18px; height: 18px; color: var(--muted);
+                            pointer-events: none; transform: translateY(-50%); transition: transform .3s var(--spring), color .15s; }
+  .select:focus-within .i-chevron-down { transform: translateY(-50%) rotate(180deg); color: var(--teal); }
+  .select select:disabled ~ .i-chevron-down { opacity: 0; }
+  .chooser[data-format="mp4"] .lead-audio, .chooser:not([data-format="mp4"]) .lead-video { display: none; }
+  .select.flash select { animation: flash .6s var(--ease); }
+  @keyframes flash { 0% { border-color: var(--teal); background: var(--teal-tint); } 100% { border-color: var(--line); background: var(--surface); } }
+  .pick-note { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; padding: 0 2px;
+               color: var(--muted); font-size: .9rem; font-variant-numeric: tabular-nums; min-height: 1.6em; }
+  .pick-tag { font-size: .75rem; font-weight: 800; color: var(--teal-text); background: var(--teal-tint); padding: 2px 8px; border-radius: 6px; }
+  @media (max-width: 480px) { .pickers { grid-template-columns: 1fr; } }
 
   .primary { position: relative; overflow: hidden; width: 100%; margin-top: 12px; background: var(--ink); color: var(--on-ink); font-weight: 700;
              font-size: 1.03rem; padding: 15px; border-radius: 13px; display: flex; align-items: center; justify-content: center; gap: 10px;
@@ -397,15 +405,12 @@
     .wrap { padding-left: max(14px, env(safe-area-inset-left)); padding-right: max(14px, env(safe-area-inset-right)); }
     h1 { font-size: 2rem; }
     .lede { font-size: .98rem; }
-    .seg button { font-size: .9rem; gap: 6px; }
-    .opt { padding: 10px; }
-    .opt .q { font-size: .95rem; }
     .install span { display: none; }
     .recent img, .recent .ph { width: 60px; }
   }
   @media (max-width: 520px) {
     .hero { padding-top: 38px; }
-    .options, .sk-grid { grid-template-columns: repeat(2, 1fr); }
+    .sk-grid { grid-template-columns: repeat(2, 1fr); }
     .sk-grid .sk:nth-child(3) { display: none; }
     .field { flex-wrap: wrap; }
     .field input { flex-basis: calc(100% - 90px); }
@@ -435,7 +440,7 @@
     <main>
       <section class="hero">
         <h1><span class="w">Save</span> <span class="w">any</span> <span class="w">YouTube</span> <span class="w">video.</span></h1>
-        <p class="lede">Paste a link, choose MP4 or MP3 and the quality you want, then download.</p>
+        <p class="lede">Paste a link, choose MP4, MP3 or M4A and the quality you want, then download.</p>
         <form class="field" id="form" novalidate>
           <svg class="i i-link" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>
           <label for="url" class="sr">YouTube link</label>
@@ -489,12 +494,29 @@
         </div>
 
         <div class="chooser">
-          <div class="seg" id="seg" role="tablist" aria-label="File type" data-active="video">
-            <span class="ind" aria-hidden="true"></span>
-            <button type="button" role="tab" aria-selected="true" data-tab="video"><svg class="i i-video" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5" /><rect x="2" y="6" width="14" height="12" rx="2" /></svg>Video MP4</button>
-            <button type="button" role="tab" aria-selected="false" data-tab="audio"><svg class="i i-music" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M21 16V3a1 1 0 0 0-1.28-.96l-10 2.917a1 1 0 0 0-.72.96V19" /><circle cx="18" cy="16" r="3" /><circle cx="6" cy="19" r="3" /></svg>Audio MP3</button>
+          <div class="pickers">
+            <label class="pick" for="fmtSel">
+              <span class="pick-label">Format</span>
+              <span class="select">
+                <span class="lead lead-video"><svg class="i i-video" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5" /><rect x="2" y="6" width="14" height="12" rx="2" /></svg></span><span class="lead lead-audio"><svg class="i i-music" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M21 16V3a1 1 0 0 0-1.28-.96l-10 2.917a1 1 0 0 0-.72.96V19" /><circle cx="18" cy="16" r="3" /><circle cx="6" cy="19" r="3" /></svg></span>
+                <select id="fmtSel">
+                  <option value="mp4">MP4 video</option>
+                  <option value="mp3">MP3 audio</option>
+                  <option value="m4a">M4A audio (fastest)</option>
+                </select>
+                <svg class="i i-chevron-down" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m6 9 6 6 6-6" /></svg>
+              </span>
+            </label>
+            <label class="pick" for="qualSel">
+              <span class="pick-label">Quality</span>
+              <span class="select" id="qualBox">
+                <span class="lead"><svg class="i i-gauge" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" /></svg></span>
+                <select id="qualSel"></select>
+                <svg class="i i-chevron-down" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m6 9 6 6 6-6" /></svg>
+              </span>
+            </label>
           </div>
-          <div class="options" id="options" role="radiogroup" aria-label="Quality"></div>
+          <p class="pick-note" id="pickNote"><span id="pickSize"></span><span class="pick-tag" id="pickTag" hidden></span></p>
           <p class="notice" id="tooLong" hidden></p>
           <button type="button" class="primary" id="download"><svg class="i i-download" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 15V3" /><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="m7 10 5 5 5-5" /></svg><span class="label-swap" id="downloadLabel">Download</span></button>
         </div>
@@ -790,62 +812,83 @@
     tl.textContent = info.too_long ? `This video is longer than ${info.max_minutes} minutes, the limit on this site.` : "";
 
     setState(""); setProgress(0, true);
-    selectTab("video");
+    setFormat(["mp4", "mp3", "m4a"].includes(loadPref().format) ? loadPref().format : "mp4", false);
     skeleton.classList.remove("show");
     card.classList.remove("show"); void card.offsetWidth; card.classList.add("show");
     if (innerWidth < 700) setTimeout(() => card.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" }), 120);
   }
 
-  /* ---------- choose format ---------- */
-  function selectTab(t) {
-    tab = t;
-    $("seg").dataset.active = t;
-    document.querySelectorAll(".seg button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === t)));
-    const items = t === "video"
-      ? info.resolutions.map((r) => ({ q: String(r.height), name: r.label + "p" + (r.fps > 30 ? r.fps : ""), tag: tagFor(r.label), size: r.size, label: r.label + "p" }))
-      : info.audio.map((a) => ({ q: a.bitrate, name: a.bitrate + " kbps", tag: a.bitrate === "320" ? "Best" : "", size: a.size, label: a.bitrate + " kbps" }));
-    const box = $("options");
-    box.textContent = "";
-    choice = null;
-    if (!items.length) {
-      const p = document.createElement("p"); p.className = "empty";
-      p.textContent = t === "video" ? "No video qualities were found. Try Audio MP3." : "No audio was found for this video.";
-      box.appendChild(p);
-    }
-    items.forEach((it, n) => {
-      const b = document.createElement("button");
-      b.type = "button"; b.className = "opt"; b.setAttribute("role", "radio"); b.dataset.q = it.q; b.dataset.label = it.label;
-      b.style.setProperty("--n", n);
-      const q = document.createElement("span"); q.className = "q"; q.textContent = it.name;
-      if (it.tag) { const tg = document.createElement("span"); tg.className = "tag"; tg.textContent = it.tag; q.appendChild(tg); }
-      const sz = document.createElement("span"); sz.className = "sz"; sz.textContent = it.size ? "about " + fmtSize(it.size) : "size unknown";
-      const tk = document.createElement("span"); tk.className = "tick"; tk.appendChild(icon("tickTpl"));
-      b.append(q, sz, tk);
-      b.addEventListener("click", () => pick(it.q));
-      box.appendChild(b);
+  /* ---------- choose format (two dropdowns) ---------- */
+  const PREF_KEY = "tubegrab.pref.v1";
+  const loadPref = () => { try { return JSON.parse(localStorage.getItem(PREF_KEY)) || {}; } catch (_) { return {}; } };
+  const savePref = (p) => { try { localStorage.setItem(PREF_KEY, JSON.stringify({ ...loadPref(), ...p })); } catch (_) {} };
+  let fmt = "mp4", qualities = [];
+  const labelFor = (q) => (qualities.find((x) => x.q === String(q)) || {}).label || String(q);
+
+  function setFormat(f, animate = true) {
+    fmt = f; tab = f === "mp4" ? "video" : "audio";
+    $("fmtSel").value = f;
+    card.querySelector(".chooser").dataset.format = f;
+    qualities = f === "mp4"
+      ? info.resolutions.map((r) => {
+          const tag = tagFor(r.label);
+          return { q: String(r.height), name: `${r.label}p${r.fps > 30 ? r.fps : ""}${tag ? " " + tag : ""}`,
+                   size: r.size, label: `${r.label}p`, tag, num: r.height };
+        })
+      : f === "mp3"
+        ? info.audio.filter((a) => a.bitrate !== "m4a").map((a) => ({ q: a.bitrate, name: `${a.bitrate} kbps`,
+            size: a.size, label: `${a.bitrate} kbps MP3`, tag: a.bitrate === "320" ? "Best" : "", num: +a.bitrate }))
+        : info.audio.filter((a) => a.bitrate === "m4a").map((a) => ({ q: "m4a", name: "Original quality",
+            size: a.size, label: "M4A", tag: "Fastest", num: 0 }));
+    const sel = $("qualSel");
+    sel.textContent = "";
+    qualities.forEach((it) => {
+      const o = document.createElement("option");
+      o.value = it.q;
+      o.textContent = it.size ? `${it.name}, about ${fmtSize(it.size)}` : it.name;
+      sel.appendChild(o);
     });
-    const pref = t === "video" ? (items.find((i) => +i.q <= 1080) || items[0]) : (items.find((i) => i.q === "192") || items[0]);
-    if (pref) pick(pref.q); else updateButton();
+    sel.disabled = qualities.length <= 1;
+    if (!qualities.length) {
+      choice = null;
+      $("pickSize").textContent = f === "mp4" ? "No video qualities were found. Try MP3 or M4A." : "No audio was found for this video.";
+      $("pickTag").hidden = true;
+      updateButton(); return;
+    }
+    // Remembered choice, else 720p for video and 192 kbps for MP3.
+    const pref = loadPref();
+    let want;
+    if (f === "mp4") {
+      const target = +(pref.mp4 || 720);
+      want = qualities.filter((x) => x.num <= target).sort((a, b) => b.num - a.num)[0] || qualities[qualities.length - 1];
+    } else if (f === "mp3") {
+      want = qualities.find((x) => x.q === String(pref.mp3 || "192")) || qualities[0];
+    } else want = qualities[0];
+    pick(want.q, false);
+    if (animate && !reduceMotion) { const box = $("qualBox"); box.classList.remove("flash"); void box.offsetWidth; box.classList.add("flash"); }
   }
-  function pick(q) {
-    choice = q;
-    document.querySelectorAll(".opt").forEach((o) => o.setAttribute("aria-checked", String(o.dataset.q === q)));
+
+  function pick(q, remember = true) {
+    choice = String(q);
+    $("qualSel").value = choice;
+    const it = qualities.find((x) => x.q === choice);
+    $("pickSize").textContent = fmt === "mp4" ? "Plays on any phone, PC or editor."
+      : fmt === "mp3" ? "Works in every music player, with cover art."
+      : "YouTube's own audio, no conversion. Quickest to finish.";
+    $("pickTag").textContent = it && it.tag ? it.tag : "";
+    $("pickTag").hidden = !(it && it.tag);
+    if (remember) savePref(fmt === "mp4" ? { format: fmt, mp4: it ? it.num : undefined } : fmt === "mp3" ? { format: fmt, mp3: choice } : { format: fmt });
     updateButton();
   }
+
   function updateButton() {
-    const sel = choice ? document.querySelector(`.opt[data-q="${choice}"]`) : null;
-    const label = sel ? sel.dataset.label : "";
-    swapText($("downloadLabel"), !choice ? "Choose a quality" : tab === "video" ? `Download ${label} MP4` : `Download ${label} MP3`);
+    const label = choice ? labelFor(choice) : "";
+    swapText($("downloadLabel"), !choice ? "Choose a quality" : fmt === "mp4" ? `Download ${label} MP4` : `Download ${label}`);
     $("download").disabled = !choice || !!(info && info.too_long);
   }
-  // arrow keys move between quality tiles
-  $("options").addEventListener("keydown", (e) => {
-    if (!["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp"].includes(e.key)) return;
-    const opts = [...document.querySelectorAll(".opt")]; if (!opts.length) return;
-    let i = opts.findIndex((o) => o.dataset.q === choice);
-    i = (i + (e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1) + opts.length) % opts.length;
-    pick(opts[i].dataset.q); opts[i].focus(); e.preventDefault();
-  });
+
+  $("fmtSel").addEventListener("change", (e) => { savePref({ format: e.target.value }); setFormat(e.target.value); });
+  $("qualSel").addEventListener("change", (e) => pick(e.target.value));
 
   /* ---------- download job ---------- */
   async function start() {
@@ -878,7 +921,7 @@
       if (id !== jobId) return;
       if (!err.network || ++pollFails > 20) { setState(""); showError(err.message); jobId = null; return; }
     }
-    pollTimer = setTimeout(poll, 600);
+    pollTimer = setTimeout(poll, 400);
   }
 
   function update(j) {
@@ -909,10 +952,13 @@
     $("stage").textContent = "Ready";
     const dt = $("doneText"); dt.textContent = "";
     const size = document.createElement("span"); size.textContent = fmtSize(j.size);
-    dt.append(icon("okTpl"), j.type === "audio" ? "Your MP3 is ready." : "Your MP4 is ready.", size);
+    const ext = ((j.filename || "").split(".").pop() || (j.type === "audio" ? "mp3" : "mp4")).toUpperCase();
+    if (j.elapsed) size.textContent += `, done in ${j.elapsed < 10 ? j.elapsed.toFixed(1) + "s" : j.elapsed < 60 ? Math.round(j.elapsed) + "s" : Math.floor(j.elapsed / 60) + "m " + Math.round(j.elapsed % 60) + "s"}`;
+    if (j.engine) size.textContent += `, via ${j.engine}`;
+    dt.append(icon("okTpl"), `Your ${ext} is ready.`, size);
     burst();
     if (navigator.vibrate) navigator.vibrate([18, 40, 18]);
-    toast(j.type === "audio" ? "MP3 saved to your downloads" : "MP4 saved to your downloads");
+    toast(`${ext} saved to your downloads`);
     addRecent(j);
     save();
   }
@@ -936,9 +982,8 @@
   const loadRecent = () => { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (_) { return []; } };
   const storeRecent = (list) => { try { localStorage.setItem(KEY, JSON.stringify(list.slice(0, 8))); } catch (_) {} };
   function addRecent(j) {
-    const sel = document.querySelector(`.opt[data-q="${j.quality}"]`);
     const entry = { url, id: info.id, title: info.title, thumb: info.id ? `https://i.ytimg.com/vi/${info.id}/mqdefault.jpg` : info.thumbnail,
-                    fmt: (sel ? sel.dataset.label : j.quality) + (j.type === "audio" ? " MP3" : " MP4"), size: j.size, at: Date.now() };
+                    fmt: labelFor(j.quality) + (j.type === "audio" ? "" : " MP4"), size: j.size, at: Date.now() };
     const list = loadRecent().filter((r) => !(r.id === entry.id && r.fmt === entry.fmt));
     list.unshift(entry); storeRecent(list); renderRecent();
   }
@@ -985,7 +1030,6 @@
     }
   });
   $("alertClose").addEventListener("click", () => showError(""));
-  document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => { if (tab !== b.dataset.tab) selectTab(b.dataset.tab); }));
   $("download").addEventListener("click", start);
   $("cancel").addEventListener("click", () => cancel(false));
   $("save").addEventListener("click", save);
@@ -1061,6 +1105,10 @@
   window.addEventListener("offline", () => showError(offlineMsg));
   window.addEventListener("online", () => { if ($("alertText").textContent === offlineMsg) showError(""); toast("Back online"); });
   if (!navigator.onLine) showError(offlineMsg);
+
+  // Wake the server early: if the page came from the offline cache while Render was asleep,
+  // this starts it booting before the person has even pasted a link.
+  fetch("/healthz", { cache: "no-store" }).catch(() => {});
 
   renderRecent();
   const params = new URLSearchParams(location.search);

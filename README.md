@@ -4,9 +4,9 @@ YouTube to MP4 / MP3 downloader and installable app (PWA).
 
 **Made by Jhames Martin** · [Portfolio](https://jhamesmartinph.vercel.app) · [GitHub @jrmph13](https://github.com/jrmph13)
 
-Paste a link, see the thumbnail, choose **Video MP4** (every resolution the video really has, 4K down to 144p, with file sizes) or **Audio MP3** (320 / 192 / 128 kbps), and download. Progress is real: it comes straight from the downloader, with speed, time left and the processing step (joining video and audio, converting to MP3).
+Paste a link, see the thumbnail, choose **Video MP4** (every resolution the video really has, 4K down to 144p, with file sizes) or **Audio** (MP3 320 / 192 / 128 kbps, or M4A with no conversion), and download. Progress is real: it comes straight from the downloader, with speed, time left and the processing step (joining video and audio, converting to MP3).
 
-Built with Flask, yt-dlp, Deno (solves YouTube's player challenges) and ffmpeg. Icons: [Lucide](https://lucide.dev) (ISC license, see `LICENSE-lucide.txt`).
+Built with Flask, TubeGrab Engine (its own YouTube downloader), yt-dlp as backup, Deno (solves YouTube's player challenges) and ffmpeg. Icons: [Lucide](https://lucide.dev) (ISC license, see `LICENSE-lucide.txt`).
 
 MP3s include the video thumbnail as cover art.
 
@@ -34,6 +34,36 @@ YouTube often blocks cloud servers like Render. Give the app cookies from a brow
 Cookies expire every few weeks; export again if the error returns.
 If downloads break after a YouTube change, use **Manual Deploy → Clear build cache & deploy** to get the newest yt-dlp.
 
+## TubeGrab Engine
+TubeGrab has its own YouTube reader and downloader (`engine.py`), used first:
+- Talks to YouTube's player API as the visionOS app, which gives direct stream links
+  (no JavaScript puzzle, no PO token).
+- Downloads video and audio **at the same time**, each in 10 MB pieces over 4 connections.
+- Joins, converts and tags with ffmpeg (MP4, MP3 with cover art, M4A with cover art).
+
+If the engine can't do a video (for example YouTube blocks the server), TubeGrab switches to
+yt-dlp automatically, with cookies, PO token and fallback clients. When YouTube blocks the
+engine, it rests for 10 minutes so visitors don't wait on it. `/api/status` shows
+`engine_resting_seconds` and the last engine error. Set `ENGINE=ytdlp` to turn the engine off.
+
+## Speed
+- The app starts answering right away; yt-dlp updates itself in the background and reloads when nobody is downloading.
+- "Get video" results are remembered for 15 minutes, so opening the same video again (or from Recent) is instant,
+  and the download starts without reading the video from YouTube a second time.
+- Downloads are fetched in 10 MB pieces (avoids YouTube's slow-down on long requests), with 4 fragments at a time.
+- **M4A** is the fastest audio: it keeps YouTube's own AAC audio, no conversion. MP3 has to be converted,
+  which is slow on Render's free CPU; TubeGrab uses LAME's faster mode (about 35% quicker in tests).
+- Pages and data are gzip-compressed (the page drops from about 75 KB to about 20 KB).
+
+### Keep the free server awake (optional)
+Render's free plan sleeps after 15 minutes without visitors, and waking takes about a minute.
+To keep it awake, set up a free ping, which works from a phone:
+1. Go to **cron-job.org** and make a free account.
+2. Create a cron job with the URL `https://<name>.onrender.com/healthz`, every **10 minutes**.
+
+One service awake all month uses about 720 of the 750 free hours, so keep only one free service awake.
+Also watch your Render **bandwidth**: every downloaded file is outbound traffic from Render.
+
 ## If downloads fail on Render
 Open `https://<name>.onrender.com/api/status` first. You want `deno`, `ffmpeg`, `yt_dlp_ejs`,
 `po_token_provider` and `po_token_plugin` all `true`.
@@ -42,7 +72,7 @@ Open `https://<name>.onrender.com/api/status` first. You want `deno`, `ffmpeg`, 
 YouTube often blocks cloud servers. TubeGrab already does three things on its own:
 1. Updates yt-dlp to the newest version (nightly included) every time the server starts.
 2. Runs a PO token provider (bgutil) next to the app so requests look like a normal browser.
-3. If YouTube still refuses, retries with other YouTube clients (`android_vr`, `web_embedded`, `tv`).
+3. If YouTube still refuses, retries with other YouTube clients (`visionos`, `web_embedded`, `tv_samsung`).
 
 If it still fails:
 1. Wait 10 to 30 minutes. Render's IP may be rate-limited for a while.
@@ -69,7 +99,10 @@ or `docker build -t tubegrab . && docker run -p 10000:10000 tubegrab`
 | `YTDLP_PROXY` | none | Proxy for YouTube requests, e.g. `http://user:pass@host:port` |
 | `UPDATE_YTDLP_ON_START` | 1 | Update yt-dlp each time the server starts |
 | `POT_PROVIDER` | 1 | Run the PO token provider |
-| `YTDLP_FALLBACK_CLIENTS` | android_vr,web_embedded,tv | Clients to retry with when YouTube refuses |
+| `YTDLP_FALLBACK_CLIENTS` | visionos,web_embedded,tv_samsung | Clients to retry with when YouTube refuses |
+| `ENGINE` | own | `own` = TubeGrab Engine first, yt-dlp as backup; `ytdlp` = yt-dlp only |
+| `ENGINE_COOLDOWN_SECONDS` | 600 | How long the engine rests after YouTube blocks it |
+| `INFO_CACHE_SECONDS` | 900 | How long "Get video" results are remembered |
 | `YTDLP_COOKIES_FILE` | none | Or a path, e.g. a Render Secret File at `/etc/secrets/cookies.txt` |
 
 ## How it works

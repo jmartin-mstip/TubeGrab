@@ -5,11 +5,15 @@ import shutil
 import tempfile
 import threading
 import time
+import copy
+import gzip
 import uuid
 from io import BytesIO
 
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, send_from_directory, url_for
 import yt_dlp
+
+import engine
 
 app = Flask(__name__)
 
@@ -19,6 +23,7 @@ os.makedirs(DOWNLOAD_ROOT, exist_ok=True)
 MAX_DURATION = int(os.environ.get("MAX_DURATION_SECONDS", "3600"))
 JOB_TTL = int(os.environ.get("JOB_TTL_SECONDS", "1800"))
 AUDIO_BITRATES = ["320", "192", "128"]
+INFO_TTL = int(os.environ.get("INFO_CACHE_SECONDS", "900"))
 MAX_ACTIVE_JOBS = int(os.environ.get("MAX_ACTIVE_JOBS", "3"))
 
 # Cookies help get past YouTube's "confirm you're not a bot" check on cloud IPs.
@@ -53,15 +58,25 @@ PROXY = os.environ.get("YTDLP_PROXY", "").strip()  # optional, e.g. a residentia
 POT_URL = os.environ.get("POT_PROVIDER_URL", "http://127.0.0.1:4416").strip()
 
 # If YouTube rejects the normal clients, try again with clients that don't need a PO token.
+# visionos and web_embedded don't need a PO token for downloads; tv_samsung needs Deno (installed).
 FALLBACK_CLIENTS = [c.strip() for c in os.environ.get(
-    "YTDLP_FALLBACK_CLIENTS", "android_vr,web_embedded,tv").split(",") if c.strip()]
+    "YTDLP_FALLBACK_CLIENTS", "visionos,web_embedded,tv_samsung").split(",") if c.strip()]
+
+# TubeGrab Engine (own scraper) first, yt-dlp as backup. ENGINE=ytdlp turns the engine off.
+ENGINE_MODE = os.environ.get("ENGINE", "own").strip().lower()
+ENGINE_COOLDOWN = int(os.environ.get("ENGINE_COOLDOWN_SECONDS", "600"))
+ENGINE_CACHE = {}  # video id -> (time, info, formats)
+ENGINE_STATE = {"blocked_until": 0.0, "last_ok": None, "last_error": None}
 RETRYABLE = ("failed to extract any player response", "sign in to confirm", "not a bot",
              "http error 403", "http error 429", "unable to download api page", "player response")
 
 
 def base_opts(fallback=False):
     opts = {"quiet": True, "no_warnings": True, "noprogress": True, "noplaylist": True,
-            "socket_timeout": 30, "retries": 3, "extractor_retries": 2}
+            "socket_timeout": 30, "retries": 3, "extractor_retries": 2, "fragment_retries": 5,
+            # Speed: YouTube throttles long single requests, so fetch in 10 MB ranges,
+            # and grab fragmented streams 4 pieces at a time.
+            "http_chunk_size": 10 * 1024 * 1024, "concurrent_fragment_downloads": 4}
     if COOKIES_FILE and os.path.exists(COOKIES_FILE):
         opts["cookiefile"] = COOKIES_FILE
     if PROXY:
@@ -188,6 +203,25 @@ def offline():
 
 
 @app.after_request
+def compress(res):
+    """Gzip HTML/JSON/JS so the page loads faster on mobile data."""
+    if (res.direct_passthrough or res.status_code < 200 or res.status_code >= 300
+            or "Content-Encoding" in res.headers
+            or "gzip" not in (request.headers.get("Accept-Encoding") or "").lower()):
+        return res
+    ctype = res.mimetype or ""
+    if not (ctype.startswith("text/") or ctype in ("application/json", "application/manifest+json")):
+        return res
+    data = res.get_data()
+    if len(data) < 1024:
+        return res
+    res.set_data(gzip.compress(data, compresslevel=6))
+    res.headers["Content-Encoding"] = "gzip"
+    res.headers["Vary"] = "Accept-Encoding"
+    return res
+
+
+@app.after_request
 def cache_headers(res):
     if request.path.startswith("/static/") and res.status_code == 200:
         res.headers["Cache-Control"] = "public, max-age=604800"
@@ -228,6 +262,10 @@ def status():
         po_token_provider=pot,
         po_token_plugin=pot_plugin,
         proxy=bool(PROXY),
+        engine=ENGINE_MODE,
+        engine_resting_seconds=max(0, int(ENGINE_STATE["blocked_until"] - time.time())),
+        engine_last_ok=bool(ENGINE_STATE["last_ok"]),
+        engine_last_error=ENGINE_STATE["last_error"],
         fallback_clients=FALLBACK_CLIENTS,
         yt_dlp_ejs=ejs,
         deno=bool(shutil.which("deno")),
@@ -245,6 +283,9 @@ def info():
     url = (request.get_json(silent=True) or {}).get("url", "").strip()
     if not valid_url(url):
         return jsonify(error="That doesn't look like a YouTube link. Paste a link from youtube.com or youtu.be."), 400
+    own = engine_info(url)
+    if own is not None:
+        return jsonify(own)
     try:
         data = extract(url)
     except yt_dlp.utils.DownloadError as e:
@@ -253,20 +294,106 @@ def info():
     except Exception as e:  # noqa: BLE001
         return jsonify(error=f"Something went wrong while reading the video: {e}"), 500
 
-    return jsonify(build_info(data))
+    out = build_info(data)
+    out["engine"] = "yt-dlp"
+    return jsonify(out)
+
+
+def engine_ready():
+    return ENGINE_MODE == "own" and time.time() >= ENGINE_STATE["blocked_until"]
+
+
+def engine_info(url, use_cache=True):
+    """Read the video with TubeGrab Engine. Returns page info, or None to let yt-dlp try."""
+    vid = video_id_of(url)
+    if not vid or not engine_ready():
+        return None
+    with INFO_LOCK:
+        hit = ENGINE_CACHE.get(vid)
+    if use_cache and hit and time.time() - hit[0] < INFO_TTL:
+        return copy.deepcopy(hit[1])
+    try:
+        info, formats = engine.get_info(vid, MAX_DURATION)
+    except engine.EngineError as e:
+        ENGINE_STATE["last_error"] = str(e)
+        if e.blocked:  # give the engine a rest instead of wasting seconds on every request
+            ENGINE_STATE["blocked_until"] = time.time() + ENGINE_COOLDOWN
+        app.logger.warning("TubeGrab Engine couldn't read %s (%s); using yt-dlp", vid, e)
+        return None
+    except Exception as e:  # noqa: BLE001 - never let the engine break the site
+        ENGINE_STATE["last_error"] = repr(e)
+        app.logger.exception("TubeGrab Engine crashed on %s; using yt-dlp", vid)
+        return None
+    ENGINE_STATE["last_ok"] = time.time()
+    with INFO_LOCK:
+        ENGINE_CACHE[vid] = (time.time(), info, formats)
+        for k in sorted(ENGINE_CACHE, key=lambda k: ENGINE_CACHE[k][0])[:-40]:
+            ENGINE_CACHE.pop(k, None)
+    return copy.deepcopy(info)
+
+
+VIDEO_ID_IN_URL = re.compile(r"(?:v=|youtu\.be/|shorts/|live/|embed/)([A-Za-z0-9_-]{11})")
+INFO_CACHE = {}  # video id -> (time, info, used_fallback)
+INFO_LOCK = threading.Lock()
+# Big fields we never use; dropping them keeps the cache small on a 512 MB server.
+_HEAVY = ("automatic_captions", "subtitles", "heatmap", "chapters", "storyboards", "comments", "description")
+
+
+def video_id_of(url):
+    m = VIDEO_ID_IN_URL.search(url or "")
+    return m.group(1) if m else None
+
+
+def cache_get(url):
+    vid = video_id_of(url)
+    with INFO_LOCK:
+        hit = INFO_CACHE.get(vid) if vid else None
+        if hit and time.time() - hit[0] < INFO_TTL:
+            return copy.deepcopy(hit[1]), hit[2]
+    return None, False
+
+
+def cache_put(info, used_fallback):
+    vid = info.get("id")
+    if not vid:
+        return
+    slim = yt_dlp.YoutubeDL.sanitize_info({k: v for k, v in info.items() if k not in _HEAVY})
+    with INFO_LOCK:
+        INFO_CACHE[vid] = (time.time(), slim, used_fallback)
+        if len(INFO_CACHE) > 40:  # drop the oldest
+            for k, _ in sorted(INFO_CACHE.items(), key=lambda kv: kv[1][0])[: len(INFO_CACHE) - 40]:
+                INFO_CACHE.pop(k, None)
+
+
+def read_raw(ydl, url):
+    """Ask YouTube for the video's details without choosing a format yet ("raw" info).
+    Raw info can be reused later for any format: MP4 at any height, MP3 or M4A."""
+    return ydl.extract_info(url, download=False, process=False)
 
 
 def extract(url):
-    """Read video details; if YouTube rejects the normal clients, retry once with fallback clients."""
+    """Video details for the page (cached for a few minutes). If YouTube rejects the
+    normal clients, retry once with fallback clients."""
+    raw, used_fallback = cache_get(url)
+    if raw is None:
+        used_fallback = False
+        try:
+            with yt_dlp.YoutubeDL({**base_opts(), "skip_download": True}) as ydl:
+                raw = read_raw(ydl, url)
+        except yt_dlp.utils.DownloadError as e:
+            if not (retryable(e) and FALLBACK_CLIENTS):
+                raise
+            app.logger.warning("retrying %s with fallback clients after: %s", url, e)
+            used_fallback = True
+            with yt_dlp.YoutubeDL({**base_opts(fallback=True), "skip_download": True}) as ydl:
+                raw = read_raw(ydl, url)
+        cache_put(raw, used_fallback)
+    # Fill in computed fields (sizes, best thumbnail). Local only: no network.
     try:
-        with yt_dlp.YoutubeDL({**base_opts(), "skip_download": True}) as ydl:
-            return ydl.extract_info(url, download=False)
-    except yt_dlp.utils.DownloadError as e:
-        if not (retryable(e) and FALLBACK_CLIENTS):
-            raise
-        app.logger.warning("retrying %s with fallback clients after: %s", url, e)
-        with yt_dlp.YoutubeDL({**base_opts(fallback=True), "skip_download": True}) as ydl:
-            return ydl.extract_info(url, download=False)
+        with yt_dlp.YoutubeDL({**base_opts(used_fallback), "skip_download": True}) as ydl:
+            return ydl.process_ie_result(copy.deepcopy(raw), download=False)
+    except Exception:  # noqa: BLE001
+        return raw
 
 
 def build_info(data):
@@ -292,6 +419,7 @@ def build_info(data):
 
     resolutions = sorted(by_height.values(), key=lambda r: r["height"], reverse=True)
     audio = [{"bitrate": b, "size": duration * int(b) * 125} for b in AUDIO_BITRATES]
+    audio.append({"bitrate": "m4a", "size": best_audio or duration * 129 * 125})
 
     thumb = data.get("thumbnail")
     thumbs = [t for t in (data.get("thumbnails") or [])
@@ -350,7 +478,7 @@ def new_job(url, kind, quality):
         "id": job_id, "url": url, "type": kind, "quality": quality,
         "status": "queued", "stage": "Starting", "percent": 0.0,
         "speed": None, "eta": None, "downloaded": 0, "total": 0,
-        "filename": None, "size": 0, "error": None,
+        "filename": None, "size": 0, "error": None, "started": time.time(), "elapsed": None, "engine": "yt-dlp",
         "cancel": False, "created": time.time(),
         "dir": os.path.join(DOWNLOAD_ROOT, job_id),
     }
@@ -362,7 +490,7 @@ def new_job(url, kind, quality):
 
 def public(job):
     keys = ("id", "type", "quality", "status", "stage", "percent", "speed", "eta",
-            "downloaded", "total", "filename", "size", "error")
+            "downloaded", "total", "filename", "size", "error", "elapsed", "engine")
     return {k: job[k] for k in keys}
 
 
@@ -372,7 +500,17 @@ def build_opts(job, fallback=False):
         "outtmpl": os.path.join(job["dir"], "%(title).120B.%(ext)s"),
         "windowsfilenames": True,  # file names that also work on Windows phones/PCs
     }
-    if job["type"] == "audio":
+    if job["type"] == "audio" and job["quality"] == "m4a":
+        # Fastest: keep YouTube's own AAC audio, no re-encoding.
+        opts["format"] = "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio/best"
+        opts["writethumbnail"] = True
+        opts["postprocessors"] = [
+            {"key": "FFmpegExtractAudio", "preferredcodec": "m4a"},  # copies when already AAC
+            {"key": "FFmpegMetadata"},
+            {"key": "FFmpegThumbnailsConvertor", "format": "jpg", "when": "before_dl"},
+            {"key": "EmbedThumbnail"},
+        ]
+    elif job["type"] == "audio":
         bitrate = job["quality"] if job["quality"] in AUDIO_BITRATES else "192"
         opts["format"] = "bestaudio/best"
         opts["writethumbnail"] = True  # used as the MP3's cover art
@@ -382,6 +520,8 @@ def build_opts(job, fallback=False):
             {"key": "FFmpegThumbnailsConvertor", "format": "jpg", "when": "before_dl"},
             {"key": "EmbedThumbnail"},
         ]
+        # LAME's faster encoding mode: quicker on Render's small CPU, same bitrate.
+        opts["postprocessor_args"] = {"extractaudio": ["-compression_level", "7"]}
     else:
         h = int(job["quality"]) if str(job["quality"]).isdigit() else 100000
         # Prefer H.264 + AAC for maximum compatibility (phones, Windows, editors), then anything.
@@ -394,6 +534,52 @@ def build_opts(job, fallback=False):
         opts["merge_output_format"] = "mp4"
         opts["postprocessors"] = [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}]
     return opts
+
+
+def run_engine(job):
+    """Try the job with TubeGrab Engine. True = file is ready; False = let yt-dlp do it."""
+    vid = video_id_of(job["url"])
+    if not vid or not engine_ready():
+        return False
+    with INFO_LOCK:
+        hit = ENGINE_CACHE.get(vid)
+    if not hit or time.time() - hit[0] >= INFO_TTL:
+        if engine_info(job["url"], use_cache=False) is None:
+            return False
+        with INFO_LOCK:
+            hit = ENGINE_CACHE.get(vid)
+    _, info, formats = hit
+    if info.get("too_long"):
+        raise yt_dlp.utils.DownloadError(f"Videos longer than {MAX_DURATION // 60} minutes are turned off on this site.")
+
+    def report(done, total, speed, eta):
+        job.update(status="downloading", percent=round(min(done / total * 92, 92), 1) if total else 0,
+                   downloaded=done, total=total, speed=speed, eta=eta)
+
+    def set_stage(status, stage):
+        job.update(status=status, stage=stage, **({"speed": None, "eta": None,
+                                                     "percent": max(job["percent"], 94.0)} if status == "processing" else {}))
+
+    try:
+        engine.download(info, copy.deepcopy(formats), job["type"], job["quality"], job["dir"],
+                        report, set_stage, lambda: job["cancel"])
+        job["engine"] = "TubeGrab Engine"
+        return True
+    except engine.Cancelled:
+        raise Cancelled()
+    except Exception as e:  # noqa: BLE001
+        if job["cancel"]:
+            raise Cancelled()
+        ENGINE_STATE["last_error"] = str(e)
+        if isinstance(e, engine.EngineError) and e.blocked:
+            ENGINE_STATE["blocked_until"] = time.time() + ENGINE_COOLDOWN
+        with INFO_LOCK:
+            ENGINE_CACHE.pop(vid, None)
+        app.logger.warning("TubeGrab Engine download failed for job %s (%s); using yt-dlp", job["id"], e)
+        for f in os.listdir(job["dir"]):
+            os.remove(os.path.join(job["dir"], f))
+        job.update(status="preparing", stage="Getting the video ready", percent=0.0, downloaded=0, total=0)
+        return False
 
 
 def run_job(job):
@@ -432,7 +618,7 @@ def run_job(job):
             name = d.get("postprocessor", "")
             stage = {
                 "Merger": "Joining video and audio",
-                "ExtractAudio": "Converting to MP3",
+                "ExtractAudio": "Finishing M4A" if job["quality"] == "m4a" else "Converting to MP3",
                 "VideoRemuxer": "Finishing MP4",
                 "Metadata": "Adding song info",
                 "EmbedThumbnail": "Adding cover art",
@@ -441,25 +627,45 @@ def run_job(job):
                 job.update(status="processing", stage=stage, speed=None, eta=None,
                            percent=max(job["percent"], 94.0))
 
-    def attempt(fallback):
+    def attempt(fallback, info=None):
         opts = build_opts(job, fallback)
         opts["progress_hooks"] = [progress_hook]
         opts["postprocessor_hooks"] = [pp_hook]
         state["done_files"] = 0
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(job["url"], download=False)
-            if info.get("is_live"):
+            if info is None:
+                info = read_raw(ydl, job["url"])
+                cache_put(info, fallback)
+            # else: reuse what "Get video" already read, so no second trip to YouTube.
+            probe = ydl.process_ie_result(copy.deepcopy(info), download=False)  # picks the format, no network
+            if probe.get("is_live"):
                 raise yt_dlp.utils.DownloadError("is live")
-            if (info.get("duration") or 0) > MAX_DURATION:
+            if (probe.get("duration") or 0) > MAX_DURATION:
                 raise yt_dlp.utils.DownloadError(
                     f"Videos longer than {MAX_DURATION // 60} minutes are turned off on this site.")
-            state["n_files"] = len(info.get("requested_formats") or []) or 1
+            state["n_files"] = len(probe.get("requested_formats") or []) or 1
             ydl.process_ie_result(info, download=True)
 
     try:
         job.update(status="preparing", stage="Getting the video ready")
+        if run_engine(job):
+            cached, cached_fallback = "used", False
+        else:
+            cached, cached_fallback = cache_get(job["url"])
+        if cached is not None and cached != "used":
+            try:
+                attempt(cached_fallback, info=cached)
+                cached = "used"
+            except yt_dlp.utils.DownloadError as e:
+                if job["cancel"]:
+                    raise
+                app.logger.info("cached info failed for job %s, reading again: %s", job["id"], e)
+                for f in os.listdir(job["dir"]):
+                    os.remove(os.path.join(job["dir"], f))
+                cached = None
         try:
-            attempt(fallback=False)
+            if cached != "used":
+                attempt(fallback=cached_fallback)
         except yt_dlp.utils.DownloadError as e:
             if job["cancel"] or not (retryable(e) and FALLBACK_CLIENTS):
                 raise
@@ -469,7 +675,7 @@ def run_job(job):
             job.update(status="preparing", stage="Trying another way", percent=0.0)
             attempt(fallback=True)
 
-        want = ".mp3" if job["type"] == "audio" else ".mp4"
+        want = (".m4a" if job["quality"] == "m4a" else ".mp3") if job["type"] == "audio" else ".mp4"
         files = [f for f in os.listdir(job["dir"]) if f.lower().endswith(want)]
         if not files:  # fall back to whatever media file exists
             files = [f for f in os.listdir(job["dir"])
@@ -481,6 +687,7 @@ def run_job(job):
         path = os.path.join(job["dir"], nice)
         os.replace(os.path.join(job["dir"], files[0]), path)
         job.update(status="done", stage="Ready", percent=100.0, filename=nice,
+                   elapsed=round(time.time() - job["started"], 1),
                    size=os.path.getsize(path), speed=None, eta=None)
     except Cancelled:
         job.update(status="cancelled", stage="Cancelled", speed=None, eta=None)

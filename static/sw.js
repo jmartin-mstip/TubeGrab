@@ -3,7 +3,7 @@
  * - Icons, fonts and the manifest are cache-first.
  * - /api/* (video info, downloads) always goes to the network and is never cached.
  */
-const VERSION = "tubegrab-v6";
+const VERSION = "tubegrab-v9";
 const SHELL = ["/", "/offline", "/static/manifest.webmanifest", "/static/icons/icon-192.png", "/static/icons/icon-512.png", "/static/icons/icon.svg"];
 
 self.addEventListener("install", (event) => {

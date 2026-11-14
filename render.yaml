@@ -8,6 +8,8 @@ services:
     envVars:
       - key: MAX_DURATION_SECONDS
         value: "3600"
+      - key: ENGINE                  # own = TubeGrab Engine first, yt-dlp as backup
+        value: own
       - key: UPDATE_YTDLP_ON_START   # 1 = get the newest yt-dlp every time the server starts
         value: "1"
       - key: POT_PROVIDER            # 1 = run the PO token provider inside the app

@@ -34,6 +34,24 @@ YouTube often blocks cloud servers like Render. Give the app cookies from a brow
 Cookies expire every few weeks; export again if the error returns.
 If downloads break after a YouTube change, use **Manual Deploy → Clear build cache & deploy** to get the newest yt-dlp.
 
+## If downloads fail on Render
+Open `https://<name>.onrender.com/api/status` first. You want `deno`, `ffmpeg`, `yt_dlp_ejs`,
+`po_token_provider` and `po_token_plugin` all `true`.
+
+**"YouTube is blocking requests from this server" / "Failed to extract any player response"**
+YouTube often blocks cloud servers. TubeGrab already does three things on its own:
+1. Updates yt-dlp to the newest version (nightly included) every time the server starts.
+2. Runs a PO token provider (bgutil) next to the app so requests look like a normal browser.
+3. If YouTube still refuses, retries with other YouTube clients (`android_vr`, `web_embedded`, `tv`).
+
+If it still fails:
+1. Wait 10 to 30 minutes. Render's IP may be rate-limited for a while.
+2. Restart the service (Render → Manual Deploy → Restart) to pull a newer yt-dlp.
+3. Add cookies in `YTDLP_COOKIES` (from a spare account). If that makes things worse, remove them:
+   cookies plus PO tokens sometimes clash.
+4. Last resort: set `YTDLP_PROXY` to a residential proxy. YouTube judges the IP address, and
+   datacenter IPs (like Render's) are the ones it blocks.
+
 ## Run on your computer
 ```bash
 pip install -r requirements.txt   # needs ffmpeg installed too
@@ -48,6 +66,10 @@ or `docker build -t tubegrab . && docker run -p 10000:10000 tubegrab`
 | `JOB_TTL_SECONDS` | 1800 | How long finished files are kept for re-download |
 | `MAX_ACTIVE_JOBS` | 3 | Downloads allowed at the same time (keeps the free plan from running out of memory) |
 | `YTDLP_COOKIES` | none | Contents of cookies.txt |
+| `YTDLP_PROXY` | none | Proxy for YouTube requests, e.g. `http://user:pass@host:port` |
+| `UPDATE_YTDLP_ON_START` | 1 | Update yt-dlp each time the server starts |
+| `POT_PROVIDER` | 1 | Run the PO token provider |
+| `YTDLP_FALLBACK_CLIENTS` | android_vr,web_embedded,tv | Clients to retry with when YouTube refuses |
 | `YTDLP_COOKIES_FILE` | none | Or a path, e.g. a Render Secret File at `/etc/secrets/cookies.txt` |
 
 ## How it works

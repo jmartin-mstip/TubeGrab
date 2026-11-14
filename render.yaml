@@ -8,5 +8,11 @@ services:
     envVars:
       - key: MAX_DURATION_SECONDS
         value: "3600"
-      - key: YTDLP_COOKIES
-        sync: false   # paste your cookies.txt contents in the Render dashboard
+      - key: UPDATE_YTDLP_ON_START   # 1 = get the newest yt-dlp every time the server starts
+        value: "1"
+      - key: POT_PROVIDER            # 1 = run the PO token provider inside the app
+        value: "1"
+      - key: YTDLP_COOKIES           # optional: paste cookies.txt contents in the dashboard
+        sync: false
+      - key: YTDLP_PROXY             # optional: e.g. http://user:pass@host:port (residential proxy)
+        sync: false

@@ -49,11 +49,36 @@ class Cancelled(Exception):
     pass
 
 
-def base_opts():
-    opts = {"quiet": True, "no_warnings": True, "noprogress": True, "noplaylist": True, "socket_timeout": 30, "retries": 3}
+PROXY = os.environ.get("YTDLP_PROXY", "").strip()  # optional, e.g. a residential proxy
+POT_URL = os.environ.get("POT_PROVIDER_URL", "http://127.0.0.1:4416").strip()
+
+# If YouTube rejects the normal clients, try again with clients that don't need a PO token.
+FALLBACK_CLIENTS = [c.strip() for c in os.environ.get(
+    "YTDLP_FALLBACK_CLIENTS", "android_vr,web_embedded,tv").split(",") if c.strip()]
+RETRYABLE = ("failed to extract any player response", "sign in to confirm", "not a bot",
+             "http error 403", "http error 429", "unable to download api page", "player response")
+
+
+def base_opts(fallback=False):
+    opts = {"quiet": True, "no_warnings": True, "noprogress": True, "noplaylist": True,
+            "socket_timeout": 30, "retries": 3, "extractor_retries": 2}
     if COOKIES_FILE and os.path.exists(COOKIES_FILE):
         opts["cookiefile"] = COOKIES_FILE
+    if PROXY:
+        opts["proxy"] = PROXY
+    youtube_args = {}
+    if fallback and FALLBACK_CLIENTS:
+        youtube_args["player_client"] = FALLBACK_CLIENTS
+    if POT_URL:
+        opts.setdefault("extractor_args", {})["youtubepot-bgutilhttp"] = {"base_url": [POT_URL]}
+    if youtube_args:
+        opts.setdefault("extractor_args", {})["youtube"] = youtube_args
     return opts
+
+
+def retryable(err):
+    low = str(err).lower()
+    return any(k in low for k in RETRYABLE)
 
 
 def valid_url(url):
@@ -62,6 +87,9 @@ def valid_url(url):
 
 def friendly_error(msg):
     low = msg.lower()
+    if "failed to extract any player response" in low or "http error 429" in low or "too many requests" in low:
+        return ("YouTube is blocking requests from this server right now. Wait a few minutes and try again. "
+                "If it keeps happening, the site owner can add YouTube cookies or a proxy on Render.")
     if "your age" in low or "age-restricted" in low or "inappropriate for some users" in low:
         return "This video is age-restricted. Add YouTube cookies from a signed-in adult account to download it."
     if "requested format is not available" in low:
@@ -182,8 +210,25 @@ def status():
     except ImportError:
         ejs = False
     active = sum(1 for j in JOBS.values() if j["status"] in ACTIVE)
+    pot = False
+    if POT_URL:
+        import urllib.request
+        try:
+            with urllib.request.urlopen(POT_URL.rstrip("/") + "/ping", timeout=3) as r:
+                pot = r.status == 200
+        except Exception:  # noqa: BLE001
+            pot = False
+    try:
+        import yt_dlp_plugins.extractor.getpot_bgutil_http  # noqa: F401
+        pot_plugin = True
+    except Exception:  # noqa: BLE001
+        pot_plugin = False
     return jsonify(
         yt_dlp=yt_dlp.version.__version__,
+        po_token_provider=pot,
+        po_token_plugin=pot_plugin,
+        proxy=bool(PROXY),
+        fallback_clients=FALLBACK_CLIENTS,
         yt_dlp_ejs=ejs,
         deno=bool(shutil.which("deno")),
         ffmpeg=bool(shutil.which("ffmpeg")),
@@ -201,14 +246,27 @@ def info():
     if not valid_url(url):
         return jsonify(error="That doesn't look like a YouTube link. Paste a link from youtube.com or youtu.be."), 400
     try:
-        with yt_dlp.YoutubeDL({**base_opts(), "skip_download": True}) as ydl:
-            data = ydl.extract_info(url, download=False)
+        data = extract(url)
     except yt_dlp.utils.DownloadError as e:
+        app.logger.warning("info failed for %s: %s", url, e)
         return jsonify(error=friendly_error(str(e))), 400
     except Exception as e:  # noqa: BLE001
         return jsonify(error=f"Something went wrong while reading the video: {e}"), 500
 
     return jsonify(build_info(data))
+
+
+def extract(url):
+    """Read video details; if YouTube rejects the normal clients, retry once with fallback clients."""
+    try:
+        with yt_dlp.YoutubeDL({**base_opts(), "skip_download": True}) as ydl:
+            return ydl.extract_info(url, download=False)
+    except yt_dlp.utils.DownloadError as e:
+        if not (retryable(e) and FALLBACK_CLIENTS):
+            raise
+        app.logger.warning("retrying %s with fallback clients after: %s", url, e)
+        with yt_dlp.YoutubeDL({**base_opts(fallback=True), "skip_download": True}) as ydl:
+            return ydl.extract_info(url, download=False)
 
 
 def build_info(data):
@@ -308,9 +366,9 @@ def public(job):
     return {k: job[k] for k in keys}
 
 
-def build_opts(job):
+def build_opts(job, fallback=False):
     opts = {
-        **base_opts(),
+        **base_opts(fallback),
         "outtmpl": os.path.join(job["dir"], "%(title).120B.%(ext)s"),
         "windowsfilenames": True,  # file names that also work on Windows phones/PCs
     }
@@ -383,12 +441,11 @@ def run_job(job):
                 job.update(status="processing", stage=stage, speed=None, eta=None,
                            percent=max(job["percent"], 94.0))
 
-    opts = build_opts(job)
-    opts["progress_hooks"] = [progress_hook]
-    opts["postprocessor_hooks"] = [pp_hook]
-
-    try:
-        job.update(status="preparing", stage="Getting the video ready")
+    def attempt(fallback):
+        opts = build_opts(job, fallback)
+        opts["progress_hooks"] = [progress_hook]
+        opts["postprocessor_hooks"] = [pp_hook]
+        state["done_files"] = 0
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(job["url"], download=False)
             if info.get("is_live"):
@@ -398,6 +455,19 @@ def run_job(job):
                     f"Videos longer than {MAX_DURATION // 60} minutes are turned off on this site.")
             state["n_files"] = len(info.get("requested_formats") or []) or 1
             ydl.process_ie_result(info, download=True)
+
+    try:
+        job.update(status="preparing", stage="Getting the video ready")
+        try:
+            attempt(fallback=False)
+        except yt_dlp.utils.DownloadError as e:
+            if job["cancel"] or not (retryable(e) and FALLBACK_CLIENTS):
+                raise
+            app.logger.warning("job %s retrying with fallback clients after: %s", job["id"], e)
+            for f in os.listdir(job["dir"]):  # clear partial files from the first try
+                os.remove(os.path.join(job["dir"], f))
+            job.update(status="preparing", stage="Trying another way", percent=0.0)
+            attempt(fallback=True)
 
         want = ".mp3" if job["type"] == "audio" else ".mp4"
         files = [f for f in os.listdir(job["dir"]) if f.lower().endswith(want)]
@@ -419,6 +489,7 @@ def run_job(job):
         if job["cancel"]:
             job.update(status="cancelled", stage="Cancelled")
         else:
+            app.logger.warning("job %s failed: %s", job["id"], e)
             job.update(status="error", stage="Failed", error=friendly_error(str(e)))
         shutil.rmtree(job["dir"], ignore_errors=True)
     except Exception as e:  # noqa: BLE001

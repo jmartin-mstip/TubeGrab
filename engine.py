@@ -75,7 +75,7 @@ def visitor_data(session):
         if _visitor["value"] and time.time() - _visitor["at"] < 3600:
             return _visitor["value"]
     try:
-        r = session.get(f"{YT_BASE}/?hl=en", timeout=TIMEOUT)
+        r = session.get(f"{YT_BASE}/?hl=en", timeout=8)
         m = re.search(r'"(?:VISITOR_DATA|visitorData)"\s*:\s*"([^"]+)"', r.text)
         value = m.group(1) if m else None
     except requests.RequestException:
@@ -109,7 +109,7 @@ def player(video_id):
         "racyCheckOk": True,
     }
     try:
-        r = s.post(f"{YT_BASE}/youtubei/v1/player?prettyPrint=false", json=body, headers=headers, timeout=TIMEOUT)
+        r = s.post(f"{YT_BASE}/youtubei/v1/player?prettyPrint=false", json=body, headers=headers, timeout=12)
     except requests.RequestException as e:
         raise EngineError(f"Couldn't reach YouTube: {e}") from e
     if r.status_code in (403, 429):

@@ -67,6 +67,11 @@ ENGINE_MODE = os.environ.get("ENGINE", "own").strip().lower()
 ENGINE_COOLDOWN = int(os.environ.get("ENGINE_COOLDOWN_SECONDS", "600"))
 ENGINE_CACHE = {}  # video id -> (time, info, formats)
 ENGINE_STATE = {"blocked_until": 0.0, "last_ok": None, "last_error": None}
+
+# When yt-dlp is blocked too, answer the next visitors right away instead of making each
+# of them wait through every method again. Short, so recovery is noticed quickly.
+BLOCK_MEMORY = int(os.environ.get("BLOCK_MEMORY_SECONDS", "120"))
+YTDLP_BLOCK = {"until": 0.0, "message": None}
 RETRYABLE = ("failed to extract any player response", "sign in to confirm", "not a bot",
              "http error 403", "http error 429", "unable to download api page", "player response")
 
@@ -266,6 +271,8 @@ def status():
         engine_resting_seconds=max(0, int(ENGINE_STATE["blocked_until"] - time.time())),
         engine_last_ok=bool(ENGINE_STATE["last_ok"]),
         engine_last_error=ENGINE_STATE["last_error"],
+        ytdlp_blocked_seconds=max(0, int(YTDLP_BLOCK["until"] - time.time())),
+        last_get_video=LAST_INFO,
         fallback_clients=FALLBACK_CLIENTS,
         yt_dlp_ejs=ejs,
         deno=bool(shutil.which("deno")),
@@ -283,20 +290,35 @@ def info():
     url = (request.get_json(silent=True) or {}).get("url", "").strip()
     if not valid_url(url):
         return jsonify(error="That doesn't look like a YouTube link. Paste a link from youtube.com or youtu.be."), 400
+    started = time.time()
     own = engine_info(url)
     if own is not None:
+        LAST_INFO.update(via="TubeGrab Engine", seconds=round(time.time() - started, 2))
         return jsonify(own)
+    cached, _ = cache_get(url)
+    if cached is None and time.time() < YTDLP_BLOCK["until"]:
+        # Everything was blocked a moment ago: say so at once.
+        return jsonify(error=YTDLP_BLOCK["message"], retry_after=int(YTDLP_BLOCK["until"] - time.time())), 503
     try:
         data = extract(url)
     except yt_dlp.utils.DownloadError as e:
         app.logger.warning("info failed for %s: %s", url, e)
-        return jsonify(error=friendly_error(str(e))), 400
+        msg = friendly_error(str(e))
+        if retryable(e):
+            YTDLP_BLOCK.update(until=time.time() + BLOCK_MEMORY, message=msg)
+        LAST_INFO.update(via="failed", seconds=round(time.time() - started, 2))
+        return jsonify(error=msg), 400
     except Exception as e:  # noqa: BLE001
         return jsonify(error=f"Something went wrong while reading the video: {e}"), 500
+    YTDLP_BLOCK["until"] = 0.0
+    LAST_INFO.update(via="yt-dlp", seconds=round(time.time() - started, 2))
 
     out = build_info(data)
     out["engine"] = "yt-dlp"
     return jsonify(out)
+
+
+LAST_INFO = {"via": None, "seconds": None}
 
 
 def engine_ready():
@@ -770,6 +792,27 @@ def janitor():
 
 
 threading.Thread(target=janitor, daemon=True).start()
+
+
+def warm_up():
+    """At start: get the visitor ID ready and check whether YouTube accepts the engine."""
+    if os.environ.get("WARMUP", "1") != "1" or ENGINE_MODE != "own":
+        return
+    time.sleep(2)
+    try:
+        engine.get_info(os.environ.get("WARMUP_VIDEO", "jNQXAC9IVRw"), MAX_DURATION)
+        ENGINE_STATE["last_ok"] = time.time()
+        app.logger.info("warm-up: TubeGrab Engine works")
+    except engine.EngineError as e:
+        ENGINE_STATE["last_error"] = str(e)
+        if e.blocked:
+            ENGINE_STATE["blocked_until"] = time.time() + ENGINE_COOLDOWN
+        app.logger.warning("warm-up: TubeGrab Engine not available yet (%s)", e)
+    except Exception as e:  # noqa: BLE001
+        app.logger.warning("warm-up failed: %r", e)
+
+
+threading.Thread(target=warm_up, daemon=True).start()
 
 
 if __name__ == "__main__":
